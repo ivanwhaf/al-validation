@@ -1,23 +1,24 @@
-# @Author: Ivan
-# @Time: 2020/12/23
+import argparse
 import os
 import time
-import torch
-import torch.optim as optim
-import torch.nn.functional as F
-from torch import Tensor
-from torch import nn
-from torch.utils.data import DataLoader, Subset, ConcatDataset
-import torchvision
-from torchvision import datasets, transforms, utils
-from torchvision.models import resnet18, resnet34, resnet50
+
 import matplotlib.pyplot as plt
+import torch.optim as optim
+from torch.utils.data import DataLoader, Subset, ConcatDataset
+from torchvision import datasets, transforms
+
 from models import *
 
-batch_size = 64
-train_epochs = 100
-al_epochs = 20
-lr = 0.001
+parser = argparse.ArgumentParser()
+parser.add_argument('-name', type=str, help='project name', default='mnist_qbc')
+parser.add_argument('-dataset_path', type=str, help='relative path of dataset', default='../dataset')
+parser.add_argument('-batch_size', type=int, help='batch size', default=64)
+parser.add_argument('-lr', type=float, help='learning rate', default=0.001)
+parser.add_argument('-epochs', type=int, help='training epochs', default=100)
+parser.add_argument('-al_epochs', type=int, help='active learning epochs', default=20)
+parser.add_argument('-num_classes', type=int, help='number of classes', default=10)
+parser.add_argument('-log_dir', type=str, help='log dir', default='output')
+args = parser.parse_args()
 
 
 def load_dataset():
@@ -26,33 +27,26 @@ def load_dataset():
     ])
 
     train_set = datasets.MNIST(
-        './dataset', train=True, transform=transform, download=False)
+        args.dataset_path, train=True, transform=transform, download=True)
     test_set = datasets.MNIST(
-        './dataset', train=False, transform=transform, download=False)
+        args.dataset_path, train=False, transform=transform, download=False)
     return train_set, test_set
 
 
 def create_dataloader():
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-    ])
-
-    train_set = datasets.MNIST(
-        './dataset', train=True, transform=transform, download=True)
-    test_set = datasets.MNIST(
-        './dataset', train=False, transform=transform, download=False)
+    train_set, test_set = load_dataset()
 
     # split trainset into train-val set
     train_set, val_set = torch.utils.data.random_split(train_set, [
         50000, 10000])
 
     train_loader = DataLoader(
-        train_set, batch_size=batch_size, shuffle=True)
+        train_set, batch_size=args.batch_size, shuffle=True)
 
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False)
 
     test_loader = DataLoader(
-        test_set, batch_size=batch_size, shuffle=False)
+        test_set, batch_size=args.batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader
 
@@ -84,7 +78,7 @@ def train(model, train_loader, optimizer, epoch, device, train_loss_lst, train_a
         #     plt.show()
 
         # print loss and accuracy
-        if(batch_idx+1) % 50 == 0:
+        if (batch_idx + 1) % 50 == 0:
             print('Train Epoch: {} [{}/{} ({:.1f}%)]  Loss: {:.6f}'
                   .format(epoch, batch_idx * len(inputs), len(train_loader.dataset),
                           100. * batch_idx / len(train_loader), loss.item()))
@@ -141,11 +135,11 @@ def test(model, test_loader, device):
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     # record loss and acc
-    test_loss /= len(test_loader)
+    test_loss /= len(test_loader.dataset)
     print('Test set: Average loss: {:.6f}, Accuracy: {}/{} ({:.2f}%)\n'
           .format(test_loss, correct, len(test_loader.dataset),
                   100. * correct / len(test_loader.dataset)))
-    return test_loss, correct/len(test_loader.dataset)
+    return test_loss, correct / len(test_loader.dataset)
 
 
 def main():
@@ -163,13 +157,13 @@ def main():
     model = MNISTNet().to(device)
     # model = resnet18(num_classes=10).to(device)
 
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
     # optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # train validate and test
     train_loss_lst, val_loss_lst = [], []
     train_acc_lst, val_acc_lst = [], []
-    for epoch in range(train_epochs):
+    for epoch in range(args.epochs):
         train_loss_lst, train_acc_lst = train(model, train_loader, optimizer,
                                               epoch, device, train_loss_lst, train_acc_lst)
         val_loss_lst, val_acc_lst = validate(
@@ -178,31 +172,35 @@ def main():
 
     # plot loss and accuracy
     fig = plt.figure('Loss and acc')
-    plt.plot(range(train_epochs), train_loss_lst, 'g', label='train loss')
-    plt.plot(range(train_epochs), val_loss_lst, 'k', label='val loss')
-    plt.plot(range(train_epochs), train_acc_lst, 'r', label='train acc')
-    plt.plot(range(train_epochs), val_acc_lst, 'b', label='val acc')
+    plt.plot(range(args.epochs), train_loss_lst, 'g', label='train loss')
+    plt.plot(range(args.epochs), val_loss_lst, 'k', label='val loss')
+    plt.plot(range(args.epochs), train_acc_lst, 'r', label='train acc')
+    plt.plot(range(args.epochs), val_acc_lst, 'b', label='val acc')
     plt.grid(True)
     plt.xlabel('epoch')
     plt.ylabel('acc-loss')
     plt.legend(loc="upper right")
     now = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())
     plt.savefig(os.path.join(output_path, now + '.png'))
+    plt.close(fig)
 
     # save model
-    torch.save(model, os.path.join(output_path, "mnist.pth"))
+    torch.save(model, os.path.join(output_path, "cifar10.pth"))
 
 
-def al_uncertainty():
-    pretrain_model_path = 'mnist.pth'
+def al_qbc():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = torch.load(pretrain_model_path).to(device)
+    model1 = torch.load('mnist_1.pth').to(device)
+    model2 = torch.load('mnist_2.pth').to(device)
+    model3 = torch.load('mnist_3.pth').to(device)
+
+    # model = torch.load('mnist.pth').to(device)
     # model = resnet18(num_classes=10).to(device)
     model = MNISTNet().to(device)
 
     # create output folder
     now = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())
-    output_path = os.path.join('output', now)
+    output_path = os.path.join(args.log_dir, now)
     os.makedirs(output_path)
 
     # load raw dataset
@@ -214,36 +212,48 @@ def al_uncertainty():
     left_indices = list(range(len(train_set)))
 
     # for each trail
-    trails = 12
+    trails = 10
     for trail in range(trails):
         model.eval()
+        model1.eval()
+        model2.eval()
+        model3.eval()
         ranks = []
-        # for i in range(len(train_set)):
-        #     if i in pool:
-        #         continue
-        #     data, target = train_set[i]
-        #     data = data.to(device)
-        #     data.unsqueeze_(0)
-        #     output = model(data)
-        #     output = F.softmax(output, dim=1)
-        #     pred = output.max(1, keepdim=True)
-        #     conf = pred[0]
-        #     ranks.append((i, conf.detach().cpu().numpy().tolist()[0][0]))
+
         inference_loader = DataLoader(
             left_trainset, batch_size=inference_batch_size, shuffle=False)
 
         # inference
         for batch_idx, (inputs, labels) in enumerate(inference_loader):
             inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            outputs = F.softmax(outputs, dim=1)
-            pred = outputs.max(1, keepdim=True)  # pred[0]:conf, pred[1]:index
-            conf = pred[0].view(1, -1)[0].detach().cpu().numpy().tolist()
-            for i in range(inputs.size(0)):
-                ranks.append((batch_idx*inference_batch_size+i, conf[i]))
-        print('inference done!')
+            outputs1 = model1(inputs)
+            outputs2 = model2(inputs)
+            outputs3 = model3(inputs)
 
-        ranks.sort(key=lambda x: x[1])  # [(0,0.998),...]
+            outputs1 = F.softmax(outputs1, dim=1)
+            # pred[0]:conf, pred[1]:index
+            pred1 = outputs1.max(1, keepdim=True)
+            index1 = pred1[1].view(1, -1)[0].detach().cpu().numpy().tolist()
+
+            outputs2 = F.softmax(outputs2, dim=1)
+            # pred[0]:conf, pred[1]:index
+            pred2 = outputs2.max(1, keepdim=True)
+            index2 = pred2[1].view(1, -1)[0].detach().cpu().numpy().tolist()
+
+            outputs3 = F.softmax(outputs3, dim=1)
+            # pred[0]:conf, pred[1]:index
+            pred3 = outputs3.max(1, keepdim=True)
+            index3 = pred3[1].view(1, -1)[0].detach().cpu().numpy().tolist()
+
+            for i in range(inputs.size(0)):
+                s = set()
+                s.add(index1[i])
+                s.add(index2[i])
+                s.add(index3[i])
+                ranks.append((batch_idx * inference_batch_size + i, len(s)))
+        print('inference done!')
+        ranks.sort(key=lambda x: x[1], reverse=True)  # [(0,3),...]
+        print(ranks)
         selected_indices = [item[0] for item in ranks[:5000]]
         print('selected indices!')
 
@@ -261,17 +271,17 @@ def al_uncertainty():
 
         # ============================retrain===============================
         train_loader = DataLoader(
-            pool, batch_size=batch_size, shuffle=True)
+            pool, batch_size=args.batch_size, shuffle=True)
         test_loader = DataLoader(
-            test_set, batch_size=batch_size, shuffle=False)
+            test_set, batch_size=args.batch_size, shuffle=False)
 
         # choose optimizer
-        optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
         # optimizer = optim.Adam(model.parameters(), lr=lr)
 
         # train and test
         train_loss_lst, train_acc_lst = [], []
-        for epoch in range(al_epochs):
+        for epoch in range(args.al_epochs):
             train_loss_lst, train_acc_lst = train(model, train_loader, optimizer,
                                                   epoch, device, train_loss_lst, train_acc_lst)
         test_loss, test_acc = test(model, test_loader, device)
@@ -283,22 +293,21 @@ def al_uncertainty():
 
         # plot loss and accuracy
         fig = plt.figure('Loss and acc')
-        plt.plot(range(al_epochs), train_loss_lst, 'g', label='train loss')
-        plt.plot(range(al_epochs), train_acc_lst, 'r', label='train acc')
+        plt.plot(range(args.al_epochs), train_loss_lst, 'g', label='train loss')
+        plt.plot(range(args.al_epochs), train_acc_lst, 'r', label='train acc')
         plt.grid(True)
         plt.xlabel('epoch')
         plt.ylabel('loss and acc')
         plt.legend(loc="upper right")
-        now = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())
-        plt.savefig(os.path.join(output_path, 'trail'+str(trail)+'.png'))
-        plt.close()
+        plt.savefig(os.path.join(output_path, 'trail' + str(trail) + '.png'))
+        plt.close(fig)
 
         # save model
         torch.save(model, os.path.join(
-            output_path, "mnist_uncertainty_trail"+str(trail)+".pth"))
+            output_path, "mnist_qbc_trail" + str(trail) + ".pth"))
         # ============================retrain===============================
 
 
 if __name__ == "__main__":
     # main()
-    al_uncertainty()
+    al_qbc()
